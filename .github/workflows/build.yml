@@ -1,0 +1,49 @@
+name: Build unicorn kernel
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: hoainamvip/android_kernel_xiaomi_sm8450
+          ref: sixteen-qpr2
+          path: kernel/source
+          fetch-depth: 1
+
+      - name: Tạo unicorn_defconfig
+        working-directory: kernel/source/arch/arm64/configs
+        run: |
+          for f in gki_defconfig vendor/waipio_GKI.config vendor/xiaomi_GKI.config vendor/unicorn_GKI.config; do
+            cat "$f"; echo
+          done > unicorn_defconfig
+
+      - name: Thêm KernelSU-Next + SUSFS
+        working-directory: kernel/source
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+          git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
+          cp /tmp/susfs/kernel_patches/fs/* fs/
+          cp /tmp/susfs/kernel_patches/include/linux/* include/linux/
+          patch -p1 < /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || { find . -name '*.rej' -exec cat {} +; exit 1; }
+          cat >> arch/arm64/configs/unicorn_defconfig <<EOF
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          EOF
+
+      - uses: dabao1955/kernel_build_action@main
+        with:
+          kernel-url: ./kernel/source/
+          config: unicorn_defconfig
+          arch: arm64
+          aosp-clang: true
+          aosp-clang-version: r450784e
+          aosp-gcc: true
+          android-version: 12
+          anykernel3: true
