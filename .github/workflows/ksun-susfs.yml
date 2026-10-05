@@ -1,0 +1,134 @@
+name: Add KernelSU-Next + SuSFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_branch:
+        description: Branch gốc để lấy source
+        default: sixteen-qpr2
+        required: true
+      target_branch:
+        description: Branch đầu ra (sẽ bị ghi đè mỗi lần chạy)
+        default: sixteen-qpr2-ksun
+        required: true
+      ksu_branch:
+        description: Branch của pershoot/KernelSU-Next (đã có sẵn SuSFS)
+        default: dev-susfs
+        required: true
+      susfs_branch:
+        description: Branch của simonpunk/susfs4ksu
+        default: gki-android12-5.10
+        required: true
+      config_file:
+        description: Config fragment để thêm CONFIG_KSU / SUSFS
+        default: arch/arm64/configs/vendor/unicorn_GKI.config
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: ${{ inputs.target_branch }}
+      KSU_BRANCH: ${{ inputs.ksu_branch }}
+      SUSFS_BRANCH: ${{ inputs.susfs_branch }}
+      CONFIG_FILE: ${{ inputs.config_file }}
+    steps:
+      - name: Checkout (shallow)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch }}
+          fetch-depth: 1
+
+      - name: Kiểm tra branch và config
+        run: |
+          set -euo pipefail
+          git ls-remote --exit-code --heads https://github.com/pershoot/KernelSU-Next "$KSU_BRANCH" >/dev/null \
+            || { echo "::error::Không có branch $KSU_BRANCH ở pershoot/KernelSU-Next"; exit 1; }
+          git ls-remote --exit-code --heads https://gitlab.com/simonpunk/susfs4ksu.git "$SUSFS_BRANCH" >/dev/null \
+            || { echo "::error::Không có branch $SUSFS_BRANCH ở susfs4ksu"; exit 1; }
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "::error::Không thấy $CONFIG_FILE. File có sẵn:"
+            ls arch/arm64/configs/vendor | grep -iE 'unicorn|waipio|gki' || true
+            exit 1
+          fi
+
+      - name: Patch SuSFS vào kernel
+        run: |
+          set -euo pipefail
+          git clone --depth=1 -b "$SUSFS_BRANCH" https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+          echo "SUSFS_SHA=$(git -C /tmp/susfs4ksu rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+          cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
+          cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
+
+          P=$(ls /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_*.patch | head -n1)
+          echo "Patch: $P"
+          if patch -R -p1 --dry-run -s < "$P" >/dev/null 2>&1; then
+            echo "Patch đã được áp dụng trước đó, bỏ qua"
+          else
+            patch -p1 --dry-run -F 0 < "$P"   # fail ngay nếu có hunk lệch
+            patch -p1 < "$P"
+          fi
+          find . -path ./.git -prune -o \( -name '*.orig' -o -name '*.rej' \) -print -delete
+
+      - name: Tích hợp KernelSU-Next
+        run: |
+          set -euo pipefail
+          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/${KSU_BRANCH}/kernel/setup.sh" | bash -s "$KSU_BRANCH"
+          echo "KSU_SHA=$(git -C KernelSU-Next rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          # vendor source thật, tránh nested git repo khi commit
+          rm -rf KernelSU-Next/.git
+
+      - name: Thêm config
+        run: |
+          set -euo pipefail
+          if grep -q '^CONFIG_KSU=y' "$CONFIG_FILE"; then
+            echo "Config KSU đã có, bỏ qua"
+          else
+            cat >> "$CONFIG_FILE" <<'EOF'
+
+          # KernelSU-Next + SuSFS
+          CONFIG_KSU=y
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          EOF
+          fi
+
+      - name: Kiểm tra nhanh
+        run: |
+          set -euo pipefail
+          test -f drivers/kernelsu/Kconfig
+          grep -q kernelsu drivers/Makefile
+          grep -q kernelsu drivers/Kconfig
+          test -f fs/susfs.c
+          grep -n 'KSU' "$CONFIG_FILE"
+
+      - name: Commit và push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$TARGET_BRANCH"
+          git add -A
+          git commit -m "Add KernelSU-Next (pershoot/${KSU_BRANCH} @ ${KSU_SHA}) + SuSFS (${SUSFS_BRANCH} @ ${SUSFS_SHA})"
+          git push --force origin "$TARGET_BRANCH"
+          {
+            echo "### Xong"
+            echo "- Branch: \`$TARGET_BRANCH\`"
+            echo "- KernelSU-Next: \`$KSU_BRANCH @ $KSU_SHA\`"
+            echo "- SuSFS: \`$SUSFS_BRANCH @ $SUSFS_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          
