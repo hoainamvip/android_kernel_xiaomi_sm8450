@@ -38,12 +38,12 @@ jobs:
           EOF
 
       - uses: dabao1955/kernel_build_action@main
-        with:
+                with:
           kernel-url: ./kernel/source/
           config: unicorn_defconfig
           arch: arm64
           aosp-clang: true
-          aosp-clang-version: r450784e
+          aosp-clang-version: r450784d
           aosp-gcc: true
-          android-version: 12
+          android-version: 13
           anykernel3: true
