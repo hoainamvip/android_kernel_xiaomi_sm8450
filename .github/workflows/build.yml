@@ -38,7 +38,7 @@ jobs:
           EOF
 
       - uses: dabao1955/kernel_build_action@main
-                with:
+        with:
           kernel-url: ./kernel/source/
           config: unicorn_defconfig
           arch: arm64
