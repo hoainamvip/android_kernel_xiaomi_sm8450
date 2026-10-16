@@ -1,0 +1,63 @@
+name: Add KernelSU-Next + SuSFS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SUSFS_BRANCH: gki-android12-5.10
+  CONFIG_FILE: arch/arm64/configs/vendor/unicorn_GKI.config
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: KernelSU-Next (setup.sh)
+        run: |
+          curl -LSs https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh | bash -s dev-susfs
+          # bo .git ben trong de khong bi thanh gitlink
+          rm -rf KernelSU-Next/.git 2>/dev/null || true
+
+      - name: SuSFS patch
+        run: |
+          git clone https://gitlab.com/simonpunk/susfs4ksu -b "$SUSFS_BRANCH" ~/susfs4ksu
+          cp -r ~/susfs4ksu/kernel_patches/fs/* fs/
+          cp -r ~/susfs4ksu/kernel_patches/include/linux/* include/linux/
+          patch -p1 --dry-run < ~/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+          patch -p1 < ~/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+
+      - name: Kiem tra
+        run: |
+          ls arch/arm64/configs/vendor/ | grep -E 'unicorn|xiaomi_GKI|debugfs' || true
+          grep -c ksu fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c kernel/reboot.c || true
+
+      - name: Config
+        run: |
+          if ! grep -q '^CONFIG_KSU=y' "$CONFIG_FILE"; then
+            cat >> "$CONFIG_FILE" <<'EOF'
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          EOF
+          fi
+          grep -c KSU "$CONFIG_FILE" || true
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add KernelSU-Next (dev-susfs) + SuSFS" || echo "Khong co gi thay doi"
+          git push
